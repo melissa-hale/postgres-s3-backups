@@ -4,6 +4,8 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { createReadStream, unlink, statSync } from "fs";
 import { filesize } from "filesize";
 import path from "path";
+import axios from 'axios';
+import { createWriteStream } from 'fs';
 import os from "os";
 
 import { env } from "./env";
@@ -61,7 +63,6 @@ const dumpToFile = async (filePath: string) => {
       console.log("Backup archive file is valid");
       console.log("Backup filesize:", filesize(statSync(filePath).size));
 
-      // if stderr contains text, let the user know that it was potently just a warning message
       if (stderr != "") {
         console.log(`Potential warnings detected; Please ensure the backup file "${path.basename(filePath)}" contains all needed data`);
       }
@@ -72,6 +73,37 @@ const dumpToFile = async (filePath: string) => {
 
   console.log("DB dumped to file...");
 }
+
+const retrieveBackup = async (): Promise<string> => {
+  console.log(`Retrieving backup from ${env.BACKUP_ENDPOINT}...`);
+
+  const filepath = path.join(os.tmpdir(), `backup-${new Date().getTime()}.tar.gz`);
+
+  const writer = createWriteStream(filepath);
+
+  try {
+    const response = await axios({
+      method: 'get',
+      url: env.BACKUP_ENDPOINT,
+      responseType: 'stream'
+    });
+
+    response.data.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => {
+        console.log("Backup retrieved and saved to:", filepath);
+        resolve(filepath);
+      });
+
+      writer.on('error', reject);
+    });
+
+  } catch (error) {
+    console.error("Failed to retrieve backup:", error);
+    throw error;
+  }
+};
 
 const deleteFile = async (path: string) => {
   console.log("Deleting file...");
@@ -85,16 +117,12 @@ const deleteFile = async (path: string) => {
 }
 
 export const backup = async () => {
-  console.log("Initiating DB backup...");
+  console.log("Initiating backup...");
 
-  const date = new Date().toISOString();
-  const timestamp = date.replace(/[:.]+/g, '-');
-  const filename = `${env.BACKUP_FILE_PREFIX}-${timestamp}.tar.gz`;
-  const filepath = path.join(os.tmpdir(), filename);
-
-  await dumpToFile(filepath);
+  const filepath = await retrieveBackup();
+  const filename = path.basename(filepath);
   await uploadToS3({ name: filename, path: filepath });
   await deleteFile(filepath);
 
-  console.log("DB backup complete...");
+  console.log("Backup complete...");
 }
